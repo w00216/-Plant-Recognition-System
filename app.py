@@ -24,7 +24,10 @@ try:
 except NameError:
     BASE_DIR = os.getcwd()
 
-HISTORY_FILE = os.path.join(BASE_DIR, "history.csv")
+HISTORY_FILE = os.path.join(BASE_DIR, "history.json")
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+# 确保图片保存文件夹存在
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ================= 2. 相似植物数据库 =================
 SIMILAR_PLANTS = {
@@ -145,11 +148,10 @@ except Exception as e:
     model_loaded = False
     st.error(f"❌ 模型加载失败: {e}")
 
-# ================= 6. 主界面布局（使用 Tab 区分识别与历史） =================
+# ================= 6. 主界面布局 =================
 st.markdown('<div class="hero-title">🌿 云南珍稀保护植物智能识别</div>', unsafe_allow_html=True)
 st.markdown('<div class="hero-subtitle">基于 EfficientNet 深度学习模型 · 致力于云南生物多样性保护科普</div>', unsafe_allow_html=True)
 
-# 创建两个标签页
 tab1, tab2 = st.tabs(["🔍 智能识别", "📜 历史识别记录"])
 
 # ---------- Tab 1: 识别系统 ----------
@@ -193,22 +195,36 @@ with tab1:
                 else:
                     st.session_state['predicted_class'] = predicted_class
                     
-                    # 🌟 记录到历史文件
+                    # 🌟 记录到完整历史文件
                     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    safe_filename = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{uploaded_file.name}"
+                    saved_img_path = os.path.join(UPLOAD_DIR, safe_filename)
+                    
+                    # 保存图片到本地
+                    image.convert('RGB').save(saved_img_path)
+                    
                     record = {
-                        "识别时间": now_str,
-                        "上传图片名": uploaded_file.name,
-                        "预测品种": predicted_class,
-                        "置信度": f"{confidence:.2f}%"
+                        "timestamp": now_str,
+                        "image_path": saved_img_path,
+                        "predicted_class": predicted_class,
+                        "confidence": float(confidence),
+                        "level": plant_levels.get(predicted_class, "保护物种")
                     }
-                    try:
-                        # 如果文件不存在，写入表头；存在则追加
-                        df_record = pd.DataFrame([record])
-                        df_record.to_csv(HISTORY_FILE, mode='a', header=not os.path.exists(HISTORY_FILE), index=False, encoding='utf-8-sig')
-                    except Exception as e:
-                        pass # 忽略写入报错，不影响主流程
+                    
+                    # 读取旧数据并追加
+                    history_data = []
+                    if os.path.exists(HISTORY_FILE):
+                        try:
+                            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                                history_data = json.load(f)
+                        except: pass
+                    
+                    history_data.append(record)
+                    
+                    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(history_data, f, ensure_ascii=False, indent=4)
 
-                    level = plant_levels.get(predicted_class, "保护物种")
+                    level = record["level"]
                     res_color = "#4CAF50" if dark_mode else "#2D6A4F"
                     res_sub_color = "#a3b8a6" if dark_mode else "#64748b"
                     res_badge_color = "#4CAF50" if dark_mode else "#8B4513"
@@ -283,33 +299,81 @@ with tab1:
             </a>
             ''', unsafe_allow_html=True
         )
-        
-        st.info("💡 提示：由于中国植物智官网的安全策略限制，无法直接在系统内嵌显示。点击上方按钮即可在新窗口中打开官方页面查看完整内容。")
 
 # ---------- Tab 2: 历史记录查看 ----------
 with tab2:
     st.markdown("### 📜 识别历史记录")
-    st.caption("以下是系统近期成功识别的记录。你可以随时查看并下载这些数据。")
+    st.caption("这里留存了你过去的每一次识别详情，点击卡片即可展开查看。")
     
     if os.path.exists(HISTORY_FILE):
         try:
-            history_df = pd.read_csv(HISTORY_FILE)
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                history_records = json.load(f)
             
             # 倒序显示，最新的在最上面
-            history_df = history_df.iloc[::-1].reset_index(drop=True)
+            history_records = history_records[::-1]
             
-            # 使用 Streamlit 的 dataframe 展示
-            st.dataframe(history_df, use_container_width=True, height=500)
+            if not history_records:
+                st.info("暂无历史记录。快去「智能识别」页面上传第一张照片吧！")
             
-            # 提供下载按钮
-            csv_data = history_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button(
-                label="📥 下载历史记录 (CSV)",
-                data=csv_data,
-                file_name="plant_recognition_history.csv",
-                mime="text/csv"
-            )
+            for record in history_records:
+                # 使用 Expander 做折叠面板
+                expander_title = f"🕒 {record['timestamp']} | 🌱 {record['predicted_class']} (置信度: {record['confidence']:.2f}%)"
+                
+                with st.expander(expander_title):
+                    c1, c2 = st.columns([1, 1.2], gap="large")
+                    
+                    with c1:
+                        st.markdown("#### 📸 当时上传图片")
+                        if os.path.exists(record['image_path']):
+                            st.image(record['image_path'], use_column_width=True)
+                        else:
+                            st.warning("本地图片已丢失或清理。")
+                    
+                    with c2:
+                        st.markdown("#### 📊 当时鉴定结果")
+                        res_color = "#4CAF50" if dark_mode else "#2D6A4F"
+                        res_sub_color = "#a3b8a6" if dark_mode else "#64748b"
+                        res_badge_color = "#4CAF50" if dark_mode else "#8B4513"
+                        res_conf_color = "#FFFFFF" if dark_mode else "#1B4332"
+                        
+                        st.markdown(
+                            f"""
+                            <div class="custom-card">
+                                <h2 style="margin-top:0; color: {res_color}; font-size: 2rem;">🌱 {record['predicted_class']}</h2>
+                                <div style="margin-top: 15px;">
+                                    <span style="font-size: 1.1rem; color: {res_sub_color};">保护级别：</span>
+                                    <span style="color: {res_badge_color}; font-weight: bold; font-size: 1.1rem; border: 1px solid {res_badge_color}; padding: 3px 10px; border-radius: 20px; margin-left: 10px;">{record['level']}</span>
+                                </div>
+                                <p style="font-size: 1.1rem; margin-top: 15px; color: {res_sub_color};">
+                                    模型置信度：<b style="color: {res_conf_color};">{record['confidence']:.2f}%</b>
+                                </p>
+                            </div>
+                            """, 
+                            unsafe_allow_html=True
+                        )
+                        st.progress(int(record['confidence']))
+                        
+                        # 还原相似植物鉴别
+                        if record['predicted_class'] in SIMILAR_PLANTS:
+                            st.markdown("---")
+                            st.markdown("#### 🔍 相似植物鉴别")
+                            for sim in SIMILAR_PLANTS[record['predicted_class']]:
+                                sim_query = sim['name'].split(' ')[0] if ' ' in sim['name'] else sim['name']
+                                sim_url = f"https://www.iplant.cn/info/{sim_query}"
+                                st.markdown(
+                                    f"""
+                                    <div class="similar-warn">
+                                        <div class="similar-title">⚠️ 易混淆物种：{sim['name']}</div>
+                                        <div class="similar-text">
+                                            <b>鉴别要点：</b>{sim['diff']}<br>
+                                            🔗 <a href="{sim_url}" target="_blank" class="similar-link">点击查看该相似植物的详细资料</a>
+                                        </div>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
         except Exception as e:
-            st.info("暂无历史记录或数据读取失败。")
+            st.error(f"读取历史记录失败: {e}")
     else:
         st.info("暂无历史记录。快去「智能识别」页面上传第一张照片吧！")
