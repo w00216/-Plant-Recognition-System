@@ -18,7 +18,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 兼容 Jupyter 环境和云端环境
 try:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 except NameError:
@@ -26,7 +25,6 @@ except NameError:
 
 HISTORY_FILE = os.path.join(BASE_DIR, "history.json")
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-# 确保图片保存文件夹存在
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ================= 2. 相似植物数据库 =================
@@ -195,12 +193,9 @@ with tab1:
                 else:
                     st.session_state['predicted_class'] = predicted_class
                     
-                    # 🌟 记录到完整历史文件
                     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     safe_filename = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{uploaded_file.name}"
                     saved_img_path = os.path.join(UPLOAD_DIR, safe_filename)
-                    
-                    # 保存图片到本地
                     image.convert('RGB').save(saved_img_path)
                     
                     record = {
@@ -211,16 +206,13 @@ with tab1:
                         "level": plant_levels.get(predicted_class, "保护物种")
                     }
                     
-                    # 读取旧数据并追加
                     history_data = []
                     if os.path.exists(HISTORY_FILE):
                         try:
                             with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                                 history_data = json.load(f)
                         except: pass
-                    
                     history_data.append(record)
-                    
                     with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
                         json.dump(history_data, f, ensure_ascii=False, indent=4)
 
@@ -249,6 +241,28 @@ with tab1:
                     st.progress(int(confidence))
                     st.success("✅ 鉴定结果可靠，置信度较高。")
                     
+                    # 🌟 新增：当前物种本身的官网详情链接
+                    query_name_self = IPLANT_NAME_MAPPING.get(predicted_class, predicted_class)
+                    iplant_url_self = f"https://www.iplant.cn/info/{query_name_self}"
+                    link_bg = "#1a261f" if dark_mode else "#FFFFFF"
+                    link_color = "#4CAF50" if dark_mode else "#2D6A4F"
+                    
+                    st.markdown(
+                        f'''
+                        <a href="{iplant_url_self}" target="_blank" style="text-decoration:none;">
+                            <div style="
+                                background-color: {link_bg}; color: {link_color};
+                                padding: 10px 15px; border-radius: 8px; 
+                                border: 1px solid {link_color}; display: inline-block;
+                                margin-top: 5px; margin-bottom: 15px; font-weight: 600; font-size: 0.95rem;
+                                box-shadow: 0 2px 5px rgba(0,0,0,0.05); transition: all 0.3s;">
+                                🔗 查看「{predicted_class}」官方完整资料 ↗
+                            </div>
+                        </a>
+                        ''', unsafe_allow_html=True
+                    )
+
+                    # 相似植物鉴别
                     if predicted_class in SIMILAR_PLANTS:
                         st.markdown("---")
                         st.markdown("#### 🔍 相似植物鉴别")
@@ -273,33 +287,6 @@ with tab1:
         elif not btn_predict:
             st.markdown('<div class="custom-card" style="height: 200px; display: flex; align-items: center; justify-content: center; color: #64748b; border-left-color: transparent;">图像已加载，请点击左侧按钮启动识别</div>', unsafe_allow_html=True)
 
-    # 底部权威详情
-    if st.session_state.get('predicted_class') is not None:
-        plant_name = st.session_state['predicted_class']
-        query_name = IPLANT_NAME_MAPPING.get(plant_name, plant_name)
-        iplant_url = f"https://www.iplant.cn/info/{query_name}"
-        
-        st.write("---")
-        st.markdown(f"### 📖 中国植物智 (iPlant) 权威资料：{plant_name}")
-        
-        link_bg = "#1a261f" if dark_mode else "#FFFFFF"
-        link_color = "#4CAF50" if dark_mode else "#2D6A4F"
-
-        st.markdown(
-            f'''
-            <a href="{iplant_url}" target="_blank" style="text-decoration:none;">
-                <div style="
-                    background-color: {link_bg}; color: {link_color};
-                    padding: 14px 20px; border-radius: 8px; 
-                    border: 1px solid {link_color}; display: inline-block;
-                    margin-bottom: 20px; font-weight: 600;
-                    box-shadow: 0 2px 5px rgba(0,0,0,0.05); transition: all 0.3s;">
-                    🔗 在官网新窗口打开完整形态描述与标本记录 ↗
-                </div>
-            </a>
-            ''', unsafe_allow_html=True
-        )
-
 # ---------- Tab 2: 历史记录查看 ----------
 with tab2:
     st.markdown("### 📜 识别历史记录")
@@ -310,14 +297,12 @@ with tab2:
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                 history_records = json.load(f)
             
-            # 倒序显示，最新的在最上面
             history_records = history_records[::-1]
             
             if not history_records:
                 st.info("暂无历史记录。快去「智能识别」页面上传第一张照片吧！")
             
             for record in history_records:
-                # 使用 Expander 做折叠面板
                 expander_title = f"🕒 {record['timestamp']} | 🌱 {record['predicted_class']} (置信度: {record['confidence']:.2f}%)"
                 
                 with st.expander(expander_title):
@@ -354,7 +339,28 @@ with tab2:
                         )
                         st.progress(int(record['confidence']))
                         
-                        # 还原相似植物鉴别
+                        # 🌟 历史记录中也加上：本物种的官网链接
+                        query_name_hist = IPLANT_NAME_MAPPING.get(record['predicted_class'], record['predicted_class'])
+                        iplant_url_hist = f"https://www.iplant.cn/info/{query_name_hist}"
+                        link_bg = "#1a261f" if dark_mode else "#FFFFFF"
+                        link_color = "#4CAF50" if dark_mode else "#2D6A4F"
+                        
+                        st.markdown(
+                            f'''
+                            <a href="{iplant_url_hist}" target="_blank" style="text-decoration:none;">
+                                <div style="
+                                    background-color: {link_bg}; color: {link_color};
+                                    padding: 10px 15px; border-radius: 8px; 
+                                    border: 1px solid {link_color}; display: inline-block;
+                                    margin-top: 5px; margin-bottom: 15px; font-weight: 600; font-size: 0.95rem;
+                                    box-shadow: 0 2px 5px rgba(0,0,0,0.05); transition: all 0.3s;">
+                                    🔗 查看「{record['predicted_class']}」官方完整资料 ↗
+                                </div>
+                            </a>
+                            ''', unsafe_allow_html=True
+                        )
+
+                        # 历史记录中的相似植物鉴别
                         if record['predicted_class'] in SIMILAR_PLANTS:
                             st.markdown("---")
                             st.markdown("#### 🔍 相似植物鉴别")
