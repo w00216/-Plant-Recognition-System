@@ -32,7 +32,7 @@ with st.sidebar:
         "希陶木": "省级", "滇重楼": "省级"
     }
     
-    # 这里在 .py 文件中完全合法
+    # 获取当前文件所在目录，确保云端能正确找到 json
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     CLASS_JSON_PATH = os.path.join(BASE_DIR, "class_indices.json")
     
@@ -165,68 +165,53 @@ with col2:
     
     if uploaded_file is not None and btn_predict and model_loaded:
         with st.spinner("AI 正在提取特征比对中..."):
-            # 🚨 核心加固区域：确保输入数据绝对符合模型要求 🚨
-            
-            # 1. 强制转换为 RGB 三通道（解决带有 Alpha 透明通道的 PNG 报错）
+            # 核心加固：图像预处理
             img = image.convert('RGB')
-            
-            # 2. 调整尺寸
             img = img.resize(IMG_SIZE)
-            
-            # 3. 转为数组
             img_array = img_to_array(img)
-            
-            # 4. 增加 Batch 维度 (1, 224, 224, 3)
             img_array = np.expand_dims(img_array, axis=0)
-            
-            # 5. 应用 EfficientNet 专用预处理（缩放至 [-1, 1]）
             img_array = preprocess_input(img_array)
-            
-            # 6. 强制转换为 float32（解决云端数据类型不兼容问题）
             img_array = img_array.astype('float32')
             
-            # 7. 预测
             predictions = model.predict(img_array, verbose=0)
             predicted_idx = np.argmax(predictions[0])
             confidence = predictions[0][predicted_idx] * 100
             
-            # 因为前面只加载了 model，这里重新反转一下字典获取名字
             idx_to_class = {v: k for k, v in class_indices.items()}
             predicted_class = idx_to_class.get(predicted_idx, "未知物种")
             
-            st.session_state['predicted_class'] = predicted_class
-        
-        level = plant_levels.get(predicted_class, "保护物种")
-        
-        res_color = "#4CAF50" if dark_mode else "#2D6A4F"
-        res_sub_color = "#a3b8a6" if dark_mode else "#64748b"
-        res_badge_color = "#4CAF50" if dark_mode else "#8B4513"
-        res_conf_color = "#FFFFFF" if dark_mode else "#1B4332"
+            # 🚨 核心修改：拦截机制
+            if confidence < 80.0:
+                st.error(f"❌ 拒绝识别：该图片可能不是植物，或者不属于本系统支持的 10 种植物（最高疑似度仅为 {confidence:.2f}%）。")
+                st.session_state['predicted_class'] = None  # 清空状态，防止下方显示错误结果
+            else:
+                st.session_state['predicted_class'] = predicted_class
+                
+                level = plant_levels.get(predicted_class, "保护物种")
+                res_color = "#4CAF50" if dark_mode else "#2D6A4F"
+                res_sub_color = "#a3b8a6" if dark_mode else "#64748b"
+                res_badge_color = "#4CAF50" if dark_mode else "#8B4513"
+                res_conf_color = "#FFFFFF" if dark_mode else "#1B4332"
 
-        st.markdown(
-            f"""
-            <div class="custom-card">
-                <h2 style="margin-top:0; color: {res_color}; font-size: 2rem;">🌱 {predicted_class}</h2>
-                <div style="margin-top: 15px;">
-                    <span style="font-size: 1.1rem; color: {res_sub_color};">保护级别：</span>
-                    <span style="color: {res_badge_color}; font-weight: bold; font-size: 1.1rem; border: 1px solid {res_badge_color}; padding: 3px 10px; border-radius: 20px; margin-left: 10px;">{level}</span>
-                </div>
-                <p style="font-size: 1.1rem; margin-top: 15px; color: {res_sub_color};">
-                    模型置信度：<b style="color: {res_conf_color};">{confidence:.2f}%</b>
-                </p>
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
-        
-        st.progress(int(confidence))
-        
-        if confidence >= 85:
-            st.success("✅ 鉴定结果可靠，置信度较高。")
-        elif confidence >= 60:
-            st.warning("⚠️ 鉴定结果存疑，建议结合多角度图片综合判断。")
-        else:
-            st.error("❌ 置信度较低，请确认是否属于本系统收录的物种。")
+                st.markdown(
+                    f"""
+                    <div class="custom-card">
+                        <h2 style="margin-top:0; color: {res_color}; font-size: 2rem;">🌱 {predicted_class}</h2>
+                        <div style="margin-top: 15px;">
+                            <span style="font-size: 1.1rem; color: {res_sub_color};">保护级别：</span>
+                            <span style="color: {res_badge_color}; font-weight: bold; font-size: 1.1rem; border: 1px solid {res_badge_color}; padding: 3px 10px; border-radius: 20px; margin-left: 10px;">{level}</span>
+                        </div>
+                        <p style="font-size: 1.1rem; margin-top: 15px; color: {res_sub_color};">
+                            模型置信度：<b style="color: {res_conf_color};">{confidence:.2f}%</b>
+                        </p>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
+                
+                st.progress(int(confidence))
+                st.success("✅ 鉴定结果可靠，置信度较高。")
+                st.info("💡 提示：若上传的是与目标物种形态极度相似的近缘种（如七叶一枝花与滇重楼），请结合形态特征综合判断。")
             
     elif uploaded_file is None:
         st.markdown('<div class="custom-card" style="height: 200px; display: flex; align-items: center; justify-content: center; color: #64748b; border-left-color: transparent;">等待图像输入...</div>', unsafe_allow_html=True)
@@ -234,7 +219,8 @@ with col2:
         st.markdown('<div class="custom-card" style="height: 200px; display: flex; align-items: center; justify-content: center; color: #64748b; border-left-color: transparent;">图像已加载，请点击左侧按钮启动识别</div>', unsafe_allow_html=True)
 
 # ================= 6. 底部权威详情 =================
-if 'predicted_class' in st.session_state:
+# 只有当预测成功且置信度大于 80 时，才展示官网详情
+if st.session_state.get('predicted_class') is not None:
     plant_name = st.session_state['predicted_class']
     query_name = IPLANT_NAME_MAPPING.get(plant_name, plant_name)
     iplant_url = f"https://www.iplant.cn/info/{query_name}"
