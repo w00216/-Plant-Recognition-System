@@ -181,11 +181,20 @@ with tab1:
                 img_array = img_array.astype('float32')
                 
                 predictions = model.predict(img_array, verbose=0)
-                predicted_idx = np.argmax(predictions[0])
-                confidence = predictions[0][predicted_idx] * 100
                 
+                # 🌟 计算 Top-5 概率
+                probs = predictions[0]
+                top5_indices = np.argsort(probs)[::-1][:5]
                 idx_to_class = {v: k for k, v in class_indices.items()}
-                predicted_class = idx_to_class.get(predicted_idx, "未知物种")
+                
+                top5_results = []
+                for i in top5_indices:
+                    label = idx_to_class.get(i, "未知")
+                    prob = probs[i] * 100
+                    top5_results.append((label, prob))
+                
+                predicted_class = top5_results[0][0]
+                confidence = top5_results[0][1]
                 
                 if confidence < 80.0:
                     st.error(f"❌ 拒绝识别：该图片可能不是植物，或者不属于本系统支持的 10 种植物（最高疑似度仅为 {confidence:.2f}%）。")
@@ -241,7 +250,13 @@ with tab1:
                     st.progress(int(confidence))
                     st.success("✅ 鉴定结果可靠，置信度较高。")
                     
-                    # 🌟 新增：当前物种本身的官网详情链接
+                    # 🌟 新增：展示 Top-5 概率预测表格
+                    st.markdown("##### 📈 模型 Top-5 概率预测")
+                    df_top5 = pd.DataFrame(top5_results, columns=["候选物种", "预测概率"])
+                    df_top5["预测概率"] = df_top5["预测概率"].apply(lambda x: f"{x:.2f}%")
+                    st.dataframe(df_top5, use_container_width=True, hide_index=True)
+                    
+                    # 当前物种本身的官网详情链接
                     query_name_self = IPLANT_NAME_MAPPING.get(predicted_class, predicted_class)
                     iplant_url_self = f"https://www.iplant.cn/info/{query_name_self}"
                     link_bg = "#1a261f" if dark_mode else "#FFFFFF"
@@ -339,7 +354,7 @@ with tab2:
                         )
                         st.progress(int(record['confidence']))
                         
-                        # 🌟 历史记录中也加上：本物种的官网链接
+                        # 历史记录中也加上：本物种的官网链接
                         query_name_hist = IPLANT_NAME_MAPPING.get(record['predicted_class'], record['predicted_class'])
                         iplant_url_hist = f"https://www.iplant.cn/info/{query_name_hist}"
                         link_bg = "#1a261f" if dark_mode else "#FFFFFF"
