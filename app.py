@@ -3,7 +3,6 @@ import os
 import json
 import numpy as np
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image
 from tensorflow.keras.models import load_model
 from tensorflow.keras.applications.efficientnet import preprocess_input
@@ -17,7 +16,48 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ================= 2. 左侧边栏与主题切换 =================
+# 🚨 核心修复：兼容 Jupyter 环境和云端环境
+try:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    BASE_DIR = os.getcwd()
+
+# ================= 2. 相似植物数据库 =================
+# 用于鉴别近缘种或易混淆物种
+SIMILAR_PLANTS = {
+    "云南蓝果树": [
+        {"name": "华南蓝果树 (Nyssa javanica)", "diff": "本种比较纤细，叶片薄纸质且较小，近椭圆形，叶柄短而纤细；果实近卵圆形或倒卵圆形。"}
+    ],
+    "五针白皮松": [
+        {"name": "白皮松 (Pinus bungeana)", "diff": "白皮松针叶为3针一束，老干树皮淡褐色至灰白色，呈不规则鳞状块片脱落；而五针白皮松为5针一束。"}
+    ],
+    "华盖木": [
+        {"name": "木莲属 (Manglietia) / 木兰属 (Magnolia)", "diff": "木材解剖结构上华盖木属与木莲属、拟单性木兰属等特征相似，但华盖木为单种属，可通过花被片9片、外轮最大及聚合果形态区分。"}
+    ],
+    "希陶木": [
+        {"name": "白大凤属 (Cladogynos) / 蝴蝶果属 (Cleidiocarpon)", "diff": "希陶木属为雌雄异株，雌雄花着生于退化的短枝上，雌花存在花盘，这与大戟科其他近缘属有显著区别。"}
+    ],
+    "景东翅子树": [
+        {"name": "截裂翅子树 (Pterospermum truncatolobatum)", "diff": "景东翅子树的叶顶端不裂，而截裂翅子树叶顶端有浅裂；本种花瓣倒卵形，宽约2.8厘米。"}
+    ],
+    "朱红大杜鹃": [
+        {"name": "两色杜鹃 / 云锦杜鹃", "diff": "朱红大杜鹃花冠为漏斗状钟形，深蔷薇色至深红色，管状部外面密生绒毛；叶革质，下面密被白色或黄褐色绒毛。"}
+    ],
+    "滇重楼": [
+        {"name": "七叶一枝花 (Paris polyphylla var. chinensis)", "diff": "七叶一枝花的花瓣较短，长度通常只有萼片的1/2至1/3，且常反折向下；而滇重楼花瓣与萼片近等长或更长，向上斜伸。"}
+    ],
+    "漾濞槭": [
+        {"name": "贡山槭 (Acer kungshanense) / 雷波槭", "diff": "漾濞槭叶片为掌状5裂，裂片呈长圆状披针形，叶片下表面有浓密的白色绒毛；贡山槭通常为3裂。"}
+    ],
+    "绿春苏铁": [
+        {"name": "单羽苏铁 (Cycas simplicipinna)", "diff": "绿春苏铁的大孢子叶顶片近圆形，顶裂片不明显，与侧裂片近等长，胚珠仅2枚，种子较大。"}
+    ],
+    "红河橙、宜昌橙": [
+        {"name": "宜昌橙 (Citrus ichangensis) / 马蜂柑", "diff": "红河橙的叶柄翅窄长圆形，长为叶片的2-3倍，总状花序具5-9朵花；宜昌橙翼叶与身叶近等大，多为单花。"}
+    ]
+}
+
+# ================= 3. 左侧边栏与主题切换 =================
 with st.sidebar:
     st.markdown("### ⚙️ 界面控制")
     dark_mode = st.toggle("🌙 开启深色模式 (Dark Mode)", value=False)
@@ -32,8 +72,6 @@ with st.sidebar:
         "希陶木": "省级", "滇重楼": "省级"
     }
     
-    # 获取当前文件所在目录，确保云端能正确找到 json
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     CLASS_JSON_PATH = os.path.join(BASE_DIR, "class_indices.json")
     
     try:
@@ -57,7 +95,7 @@ with st.sidebar:
     except Exception as e:
         st.warning(f"未能加载植物列表: {e}")
 
-# ================= 3. 全局强制主题覆盖 =================
+# ================= 4. 全局强制主题覆盖 =================
 if dark_mode:
     bg_app = "#0f1712"
     text_app = "#e8f5e9"
@@ -70,6 +108,9 @@ if dark_mode:
     info_bg = "#1e2e24"
     upload_info_text = "#a5d6a7"
     btn_bg = "#4CAF50"
+    warn_bg = "#2a1f1f"
+    warn_border = "#ef5350"
+    warn_text = "#ffcdd2"
 else:
     bg_app = "#F4F7F4"
     text_app = "#1B4332"
@@ -82,6 +123,9 @@ else:
     info_bg = "#E8F3EC"
     upload_info_text = "#1B4332"
     btn_bg = "#2D6A4F"
+    warn_bg = "#FFF3E0"
+    warn_border = "#F57C00"
+    warn_text = "#E65100"
 
 theme_css = f"""
 <style>
@@ -105,6 +149,18 @@ theme_css = f"""
     .upload-info {{ background-color: {info_bg} !important; border-color: {title_color} !important; color: {upload_info_text} !important; }}
     [data-testid="stFileUploader"] {{ background-color: {card_bg} !important; border-color: {card_border} !important; }}
     .stButton>button {{ background-color: {btn_bg} !important; color: white !important; }}
+    
+    /* 相似植物提示框样式 */
+    .similar-warn {{
+        background-color: {warn_bg} !important;
+        border-left: 5px solid {warn_border} !important;
+        padding: 16px 20px !important;
+        border-radius: 8px !important;
+        margin-top: 15px;
+    }}
+    .similar-title {{ color: {warn_text} !important; font-weight: bold; font-size: 1.1rem; }}
+    .similar-text {{ color: {warn_text} !important; font-size: 0.95rem; line-height: 1.5; }}
+    .similar-link {{ color: {warn_border} !important; text-decoration: underline; font-weight: bold; }}
 </style>
 """
 st.markdown(theme_css, unsafe_allow_html=True)
@@ -125,7 +181,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ================= 4. 加载模型 =================
+# ================= 5. 加载模型 =================
 MODEL_PATH = os.path.join(BASE_DIR, "plant_model.h5")
 IMG_SIZE = (224, 224)
 IPLANT_NAME_MAPPING = {"红河橙、宜昌橙": "宜昌橙"}
@@ -142,7 +198,7 @@ except Exception as e:
     model_loaded = False
     st.error(f"❌ 模型加载失败: {e}")
 
-# ================= 5. 主界面布局 =================
+# ================= 6. 主界面布局 =================
 st.markdown('<div class="hero-title">🌿 云南珍稀保护植物智能识别</div>', unsafe_allow_html=True)
 st.markdown('<div class="hero-subtitle">基于 EfficientNet 深度学习模型 · 致力于云南生物多样性保护科普</div>', unsafe_allow_html=True)
 
@@ -165,7 +221,6 @@ with col2:
     
     if uploaded_file is not None and btn_predict and model_loaded:
         with st.spinner("AI 正在提取特征比对中..."):
-            # 核心加固：图像预处理
             img = image.convert('RGB')
             img = img.resize(IMG_SIZE)
             img_array = img_to_array(img)
@@ -180,10 +235,9 @@ with col2:
             idx_to_class = {v: k for k, v in class_indices.items()}
             predicted_class = idx_to_class.get(predicted_idx, "未知物种")
             
-            # 🚨 核心修改：拦截机制
             if confidence < 80.0:
                 st.error(f"❌ 拒绝识别：该图片可能不是植物，或者不属于本系统支持的 10 种植物（最高疑似度仅为 {confidence:.2f}%）。")
-                st.session_state['predicted_class'] = None  # 清空状态，防止下方显示错误结果
+                st.session_state['predicted_class'] = None  
             else:
                 st.session_state['predicted_class'] = predicted_class
                 
@@ -211,15 +265,35 @@ with col2:
                 
                 st.progress(int(confidence))
                 st.success("✅ 鉴定结果可靠，置信度较高。")
-                st.info("💡 提示：若上传的是与目标物种形态极度相似的近缘种（如七叶一枝花与滇重楼），请结合形态特征综合判断。")
+                
+                # 🚨 新增：相似植物鉴别提醒模块
+                if predicted_class in SIMILAR_PLANTS:
+                    st.markdown("---")
+                    st.markdown("#### 🔍 相似植物鉴别")
+                    
+                    for sim in SIMILAR_PLANTS[predicted_class]:
+                        sim_query = sim['name'].split(' ')[0] if ' ' in sim['name'] else sim['name']
+                        sim_url = f"https://www.iplant.cn/info/{sim_query}"
+                        st.markdown(
+                            f"""
+                            <div class="similar-warn">
+                                <div class="similar-title">⚠️ 易混淆物种：{sim['name']}</div>
+                                <div class="similar-text">
+                                    <b>鉴别要点：</b>{sim['diff']}<br>
+                                    🔗 <a href="{sim_url}" target="_blank" class="similar-link">点击查看该相似植物的详细资料</a>
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
             
     elif uploaded_file is None:
         st.markdown('<div class="custom-card" style="height: 200px; display: flex; align-items: center; justify-content: center; color: #64748b; border-left-color: transparent;">等待图像输入...</div>', unsafe_allow_html=True)
     elif not btn_predict:
         st.markdown('<div class="custom-card" style="height: 200px; display: flex; align-items: center; justify-content: center; color: #64748b; border-left-color: transparent;">图像已加载，请点击左侧按钮启动识别</div>', unsafe_allow_html=True)
 
-# ================= 6. 底部权威详情 =================
-# 只有当预测成功且置信度大于 80 时，才展示官网详情
+# ================= 7. 底部权威详情 =================
+# 移除了 iframe，改为更稳定的链接跳转
 if st.session_state.get('predicted_class') is not None:
     plant_name = st.session_state['predicted_class']
     query_name = IPLANT_NAME_MAPPING.get(plant_name, plant_name)
@@ -246,5 +320,4 @@ if st.session_state.get('predicted_class') is not None:
         ''', unsafe_allow_html=True
     )
     
-    st.caption("以下网页由中国科学院植物研究所提供（若无法显示请点击上方按钮）：")
-    components.iframe(iplant_url, height=800, scrolling=True)
+    st.info("💡 提示：由于中国植物智官网的安全策略限制，无法直接在系统内嵌显示。点击上方按钮即可在新窗口中打开官方页面查看完整内容。")
