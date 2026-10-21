@@ -5,8 +5,10 @@ import numpy as np
 import pandas as pd
 import datetime
 import streamlit as st
+import tensorflow as tf
+import matplotlib.cm as cm
 from PIL import Image
-from tensorflow.keras.models import load_model
+from tensorflow.keras.models import load_model, Model
 from tensorflow.keras.applications.efficientnet import preprocess_input
 from tensorflow.keras.preprocessing.image import img_to_array
 
@@ -41,10 +43,52 @@ SIMILAR_PLANTS = {
     "红河橙、宜昌橙": [{"name": "马蜂柑", "diff": "红河橙的叶柄翅窄长圆形，总状花序具5-9朵花；宜昌橙翼叶与身叶近等大，多为单花。"}]
 }
 
-# ================= 3. 左侧边栏与主题切换 =================
+# ================= 3. 核心算法：Grad-CAM 生成器 =================
+def make_gradcam_heatmap(img_array, model, pred_index=None):
+    base_model = model.layers[0]
+    last_conv_layer_name = 'top_activation' 
+    try:
+        grad_model = Model([base_model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output])
+    except:
+        for layer in reversed(base_model.layers):
+            if isinstance(layer, tf.keras.layers.Conv2D):
+                last_conv_layer_name = layer.name
+                break
+        grad_model = Model([base_model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output])
+
+    with tf.GradientTape() as tape:
+        last_conv_layer_output, preds = grad_model(img_array)
+        if pred_index is None:
+            pred_index = tf.argmax(preds[0])
+        class_channel = preds[:, pred_index]
+
+    grads = tape.gradient(class_channel, last_conv_layer_output)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    last_conv_layer_output = last_conv_layer_output[0]
+    heatmap = last_conv_layer_output @ pooled_grads[..., tf.newaxis]
+    heatmap = tf.squeeze(heatmap)
+    heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-10)
+    return heatmap.numpy()
+
+def display_gradcam(img_path, heatmap, alpha=0.4):
+    img = tf.keras.preprocessing.image.load_img(img_path)
+    img = tf.keras.preprocessing.image.img_to_array(img)
+    heatmap = np.uint8(255 * heatmap)
+    jet = cm.get_cmap("jet")
+    jet_colors = jet(np.arange(256))[:, :3]
+    jet_heatmap = jet_colors[heatmap]
+    jet_heatmap = tf.keras.preprocessing.image.array_to_img(jet_heatmap)
+    jet_heatmap = jet_heatmap.resize((img.shape[1], img.shape[0]))
+    jet_heatmap = tf.keras.preprocessing.image.img_to_array(jet_heatmap)
+    superimposed_img = jet_heatmap * alpha + img
+    superimposed_img = tf.keras.preprocessing.image.array_to_img(superimposed_img)
+    return superimposed_img
+
+# ================= 4. 左侧边栏与主题切换 =================
 with st.sidebar:
     st.markdown("### ⚙️ 界面控制")
     dark_mode = st.toggle("🌙 开启深色模式 (Dark Mode)", value=False)
+    show_gradcam = st.toggle("🔥 显示 AI 关注区域 (Grad-CAM)", value=False)
     
     st.write("---")
     st.markdown("### 🌿 云南保护植物名录")
@@ -79,7 +123,7 @@ with st.sidebar:
     except Exception as e:
         st.warning(f"未能加载植物列表: {e}")
 
-# ================= 4. 全局强制主题覆盖 =================
+# ================= 5. 全局强制主题覆盖 =================
 if dark_mode:
     bg_app, text_app, sidebar_bg = "#0f1712", "#e8f5e9", "#152019"
     title_color, sub_color = "#4CAF50", "#a3b8a6"
@@ -129,7 +173,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ================= 5. 加载模型 =================
+# ================= 6. 加载模型 =================
 MODEL_PATH = os.path.join(BASE_DIR, "plant_model.h5")
 IMG_SIZE = (224, 224)
 IPLANT_NAME_MAPPING = {"红河橙、宜昌橙": "宜昌橙"}
@@ -146,7 +190,7 @@ except Exception as e:
     model_loaded = False
     st.error(f"❌ 模型加载失败: {e}")
 
-# ================= 6. 主界面布局 =================
+# ================= 7. 主界面布局 =================
 st.markdown('<div class="hero-title">🌿 云南珍稀保护植物智能识别</div>', unsafe_allow_html=True)
 st.markdown('<div class="hero-subtitle">基于 EfficientNet 深度学习模型 · 致力于云南生物多样性保护科普</div>', unsafe_allow_html=True)
 
@@ -182,7 +226,6 @@ with tab1:
                 
                 predictions = model.predict(img_array, verbose=0)
                 
-                # 🌟 计算 Top-5 概率
                 probs = predictions[0]
                 top5_indices = np.argsort(probs)[::-1][:5]
                 idx_to_class = {v: k for k, v in class_indices.items()}
@@ -250,9 +293,34 @@ with tab1:
                     st.progress(int(confidence))
                     st.success("✅ 鉴定结果可靠，置信度较高。")
                     
-                    # 🌟 新增：展示 Top-5 概率预测表格
-                    st.markdown("##### 📈 模型 Top-5 概率预测")
-                    df_top5 = pd.DataFrame(top5_results, columns=["候选物种", "预测概率"])
+                    # 🌟 外部物种混淆预警（取代之前单纯的 Top-5 表格）
+                    if predicted_class in SIMILAR_PLANTS:
+                        st.markdown("---")
+                        st.markdown("#### ⚠️ 外部相似物种高危预警")
+                        st.caption("提示：该目标在形态上与以下未收录在系统中的植物极度相似，需人工复核。")
+                        
+                        for sim in SIMILAR_PLANTS[predicted_class]:
+                            sim_query = sim['name'].split(' ')[0] if ' ' in sim['name'] else sim['name']
+                            sim_url = f"https://www.iplant.cn/info/{sim_query}"
+                            
+                            # 采用醒目的警告框
+                            st.markdown(
+                                f"""
+                                <div class="similar-warn">
+                                    <div class="similar-title">🚨 极高风险混淆：{sim['name']}</div>
+                                    <div class="similar-text" style="margin-top: 10px;">
+                                        <b>形态鉴别要点：</b>{sim['diff']}<br><br>
+                                        🔗 <a href="{sim_url}" target="_blank" class="similar-link">点击查阅该物种的权威资料 ↗</a>
+                                    </div>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                    
+                    # 展示系统内部的 Top-5 概率，作为模型行为的补充说明
+                    st.markdown("---")
+                    st.markdown("##### 📈 模型内部 Top-5 预测分布")
+                    df_top5 = pd.DataFrame(top5_results, columns=["候选物种(系统内)", "预测概率"])
                     df_top5["预测概率"] = df_top5["预测概率"].apply(lambda x: f"{x:.2f}%")
                     st.dataframe(df_top5, use_container_width=True, hide_index=True)
                     
@@ -277,25 +345,21 @@ with tab1:
                         ''', unsafe_allow_html=True
                     )
 
-                    # 相似植物鉴别
-                    if predicted_class in SIMILAR_PLANTS:
+                    # 展示 Grad-CAM 热力图
+                    if show_gradcam:
                         st.markdown("---")
-                        st.markdown("#### 🔍 相似植物鉴别")
-                        for sim in SIMILAR_PLANTS[predicted_class]:
-                            sim_query = sim['name'].split(' ')[0] if ' ' in sim['name'] else sim['name']
-                            sim_url = f"https://www.iplant.cn/info/{sim_query}"
-                            st.markdown(
-                                f"""
-                                <div class="similar-warn">
-                                    <div class="similar-title">⚠️ 易混淆物种：{sim['name']}</div>
-                                    <div class="similar-text">
-                                        <b>鉴别要点：</b>{sim['diff']}<br>
-                                        🔗 <a href="{sim_url}" target="_blank" class="similar-link">点击查看该相似植物的详细资料</a>
-                                    </div>
-                                </div>
-                                """,
-                                unsafe_allow_html=True
-                            )
+                        st.markdown("#### 🔥 AI 特征关注热力图")
+                        try:
+                            heatmap = make_gradcam_heatmap(img_array, model, pred_index=top5_indices[0])
+                            superimposed_img = display_gradcam(saved_img_path, heatmap)
+                            
+                            gcol1, gcol2 = st.columns(2)
+                            with gcol1:
+                                st.image(image.resize(IMG_SIZE), caption="原图", use_column_width=True)
+                            with gcol2:
+                                st.image(superimposed_img, caption="AI 关注区域 (热力图)", use_column_width=True)
+                        except Exception as e:
+                            st.warning(f"生成热力图失败: {e}")
                 
         elif uploaded_file is None:
             st.markdown('<div class="custom-card" style="height: 200px; display: flex; align-items: center; justify-content: center; color: #64748b; border-left-color: transparent;">等待图像输入...</div>', unsafe_allow_html=True)
@@ -354,7 +418,27 @@ with tab2:
                         )
                         st.progress(int(record['confidence']))
                         
-                        # 历史记录中也加上：本物种的官网链接
+                        # 历史记录中的外部相似物种预警
+                        if record['predicted_class'] in SIMILAR_PLANTS:
+                            st.markdown("---")
+                            st.markdown("#### ⚠️ 外部相似物种高危预警")
+                            for sim in SIMILAR_PLANTS[record['predicted_class']]:
+                                sim_query = sim['name'].split(' ')[0] if ' ' in sim['name'] else sim['name']
+                                sim_url = f"https://www.iplant.cn/info/{sim_query}"
+                                st.markdown(
+                                    f"""
+                                    <div class="similar-warn">
+                                        <div class="similar-title">🚨 极高风险混淆：{sim['name']}</div>
+                                        <div class="similar-text" style="margin-top: 10px;">
+                                            <b>形态鉴别要点：</b>{sim['diff']}<br><br>
+                                            🔗 <a href="{sim_url}" target="_blank" class="similar-link">点击查阅该物种的权威资料 ↗</a>
+                                        </div>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
+
+                        # 历史记录中的官网链接
                         query_name_hist = IPLANT_NAME_MAPPING.get(record['predicted_class'], record['predicted_class'])
                         iplant_url_hist = f"https://www.iplant.cn/info/{query_name_hist}"
                         link_bg = "#1a261f" if dark_mode else "#FFFFFF"
@@ -374,26 +458,6 @@ with tab2:
                             </a>
                             ''', unsafe_allow_html=True
                         )
-
-                        # 历史记录中的相似植物鉴别
-                        if record['predicted_class'] in SIMILAR_PLANTS:
-                            st.markdown("---")
-                            st.markdown("#### 🔍 相似植物鉴别")
-                            for sim in SIMILAR_PLANTS[record['predicted_class']]:
-                                sim_query = sim['name'].split(' ')[0] if ' ' in sim['name'] else sim['name']
-                                sim_url = f"https://www.iplant.cn/info/{sim_query}"
-                                st.markdown(
-                                    f"""
-                                    <div class="similar-warn">
-                                        <div class="similar-title">⚠️ 易混淆物种：{sim['name']}</div>
-                                        <div class="similar-text">
-                                            <b>鉴别要点：</b>{sim['diff']}<br>
-                                            🔗 <a href="{sim_url}" target="_blank" class="similar-link">点击查看该相似植物的详细资料</a>
-                                        </div>
-                                    </div>
-                                    """,
-                                    unsafe_allow_html=True
-                                )
         except Exception as e:
             st.error(f"读取历史记录失败: {e}")
     else:
