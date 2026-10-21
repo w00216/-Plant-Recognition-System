@@ -58,7 +58,6 @@ def hash_password(password):
 
 def load_users():
     if not os.path.exists(USERS_FILE):
-        # 初始化管理员账号
         default_users = {ADMIN_USER: {"password": hash_password(ADMIN_PASS), "role": "admin"}}
         with open(USERS_FILE, 'w', encoding='utf-8') as f:
             json.dump(default_users, f, ensure_ascii=False, indent=4)
@@ -79,7 +78,7 @@ if 'logged_in' not in st.session_state:
     st.session_state['role'] = ""
 
 if not st.session_state['logged_in']:
-    st.markdown("<h1 style='text-align: center; color: #2D6A4F;'>🌿 云南珍稀保护植物智能识别系统</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #2D6A4F; margin-top: 50px;'>🌿 云南珍稀保护植物智能识别系统</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #64748b;'>请登录或注册以使用系统</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -272,8 +271,18 @@ if st.session_state['role'] == "admin":
                 st.info("暂无任何用户使用记录。")
             else:
                 df_hist = pd.DataFrame(history_records)
+                
+                # 🚨 核心修复：兼容旧版本没有 username 字段的数据，避免 KeyError 崩溃
+                if 'username' not in df_hist.columns:
+                    df_hist['username'] = '历史测试用户'
+                for col in ["timestamp", "predicted_class", "confidence"]:
+                    if col not in df_hist.columns:
+                        df_hist[col] = '未知'
+
+                # 提取需要的列并重命名
                 df_hist = df_hist[["username", "timestamp", "predicted_class", "confidence"]]
                 df_hist.columns = ["使用用户", "识别时间", "识别结果", "置信度(%)"]
+                
                 st.dataframe(df_hist.iloc[::-1], use_container_width=True, hide_index=True)
         else:
             st.info("暂无历史记录文件。")
