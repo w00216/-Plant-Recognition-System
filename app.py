@@ -56,15 +56,31 @@ def hash_password(password): return hashlib.sha256(password.encode()).hexdigest(
 
 def load_users():
     if not os.path.exists(USERS_FILE):
-        default_users = {ADMIN_USER: {"password": hash_password(ADMIN_PASS), "role": "admin"}}
+        default_users = {ADMIN_USER: {"password": hash_password(ADMIN_PASS), "role": "admin", "read_messages": []}}
         with open(USERS_FILE, 'w', encoding='utf-8') as f: json.dump(default_users, f, ensure_ascii=False, indent=4)
         return default_users
-    with open(USERS_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+    with open(USERS_FILE, 'r', encoding='utf-8') as f: 
+        users = json.load(f)
+        # 兼容旧数据结构
+        for u in users:
+            if "read_messages" not in users[u]:
+                users[u]["read_messages"] = []
+        return users
 
 def save_user(username, password, role):
     users = load_users()
-    users[username] = {"password": hash_password(password), "role": role}
+    users[username] = {"password": hash_password(password), "role": role, "read_messages": []}
     with open(USERS_FILE, 'w', encoding='utf-8') as f: json.dump(users, f, ensure_ascii=False, indent=4)
+
+def update_user_read_msg(username, msg_time):
+    users = load_users()
+    if username in users:
+        if "read_messages" not in users[username]:
+            users[username]["read_messages"] = []
+        if msg_time not in users[username]["read_messages"]:
+            users[username]["read_messages"].append(msg_time)
+            with open(USERS_FILE, 'w', encoding='utf-8') as f: 
+                json.dump(users, f, ensure_ascii=False, indent=4)
 
 def load_messages():
     if os.path.exists(MESSAGES_FILE):
@@ -73,7 +89,7 @@ def load_messages():
 
 def save_message(msg):
     messages = load_messages()
-    messages.append({"time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "content": msg})
+    messages.append({"time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "content": msg})
     with open(MESSAGES_FILE, 'w', encoding='utf-8') as f: json.dump(messages, f, ensure_ascii=False, indent=4)
 
 def log_history(username, predicted_class, confidence, image_path):
@@ -94,7 +110,7 @@ def log_history(username, predicted_class, confidence, image_path):
 
 # ================= 4. 登录与注册 =================
 if 'logged_in' not in st.session_state:
-    st.session_state.update({'logged_in': False, 'username': "", 'role': ""})
+    st.session_state.update({'logged_in': False, 'username': "", 'role': "", 'admin_view': 'recognize'})
 
 if not st.session_state['logged_in']:
     st.markdown("<h1 style='text-align: center; color: #2D6A4F; margin-top: 50px;'>🌿 云南珍稀保护植物智能识别系统</h1>", unsafe_allow_html=True)
@@ -108,7 +124,19 @@ if not st.session_state['logged_in']:
             if st.button("登录", use_container_width=True):
                 users = load_users()
                 if login_user in users and users[login_user]["password"] == hash_password(login_pass):
-                    st.session_state.update({'logged_in': True, 'username': login_user, 'role': users[login_user]["role"]})
+                    st.session_state.update({'logged_in': True, 'username': login_user, 'role': users[login_user]["role"], 'admin_view': 'recognize'})
+                    
+                    # 🌟 检查是否有未读公告
+                    msgs = load_messages()
+                    if msgs:
+                        latest_msg = msgs[-1]
+                        read_msgs = users[login_user].get("read_messages", [])
+                        if latest_msg["time"] not in read_msgs:
+                            # 记录到 session_state，渲染主页面时弹出
+                            st.session_state['new_notice'] = latest_msg["content"]
+                            # 标记为已读
+                            update_user_read_msg(login_user, latest_msg["time"])
+                    
                     st.rerun()
                 else: st.error("账号或密码错误！")
         with auth_tab2:
@@ -199,7 +227,12 @@ theme_css = f"""
 """
 st.markdown(theme_css, unsafe_allow_html=True)
 
-# ================= 6. 侧边栏（统一放置控制按键） =================
+# 触发未读公告提示
+if 'new_notice' in st.session_state:
+    st.toast(f"📢 系统最新公告: {st.session_state['new_notice']}", icon="📢")
+    del st.session_state['new_notice'] # 弹过一次就删掉，防止页面刷新重弹
+
+# ================= 6. 侧边栏（导航与功能键统一放置） =================
 with st.sidebar:
     st.markdown("### ⚙️ 界面控制")
     role_name = "👑 管理员" if st.session_state['role']=='admin' else "🔬 专家" if st.session_state['role']=='expert' else "🌱 普通用户"
@@ -208,13 +241,21 @@ with st.sidebar:
     if st.button("🚪 退出登录", use_container_width=True):
         st.session_state.update({'logged_in': False, 'username': "", 'role': ""})
         st.rerun()
-        
+    
+    if st.session_state['role'] == "admin":
+        st.write("---")
+        st.markdown("### 🛠️ 管理员导航")
+        admin_view = st.radio("选择后台功能", ["🌿 基础识别系统", "📊 全平台数据", "👥 用户管理", "📢 发布公告"])
+        if admin_view == "🌿 基础识别系统": st.session_state['admin_view'] = 'recognize'
+        elif admin_view == "📊 全平台数据": st.session_state['admin_view'] = 'data'
+        elif admin_view == "👥 用户管理": st.session_state['admin_view'] = 'users'
+        elif admin_view == "📢 发布公告": st.session_state['admin_view'] = 'notice'
+
     st.write("---")
     if st.toggle("🌙 开启深色模式", value=dark_mode): st.session_state['dark_mode'] = True
     else: st.session_state['dark_mode'] = False
     if st.session_state['dark_mode'] != dark_mode: st.rerun()
     
-    # 专家与管理员才有的专属开关
     if st.session_state['role'] in ["expert", "admin"]:
         st.write("---")
         st.markdown("### 🔬 专家分析工具")
@@ -235,11 +276,7 @@ with open(CLASS_JSON_PATH, 'r', encoding='utf-8') as f: class_indices = json.loa
 idx_to_class = {v: k for k, v in class_indices.items()}
 plant_levels = {"云南蓝果树": "一级", "五针白皮松": "一级", "华盖木": "一级", "绿春苏铁": "一级", "景东翅子树": "二级", "朱红大杜鹃": "二级", "漾濞槭": "二级", "红河橙、宜昌橙": "二级", "希陶木": "省级", "滇重楼": "省级"}
 
-# 显示公告
-messages = load_messages()
-if messages: st.toast(f"📢 系统公告: {messages[-1]['content']}", icon="📢")
-
-# ================= 8. 核心识别 UI（所有角色共用） =================
+# ================= 8. 核心识别 UI =================
 def render_recognition_ui():
     col1, col2 = st.columns([1, 1.2], gap="large")
     with col1:
@@ -269,7 +306,6 @@ def render_recognition_ui():
                 if confidence < 80.0:
                     st.error("❌ 拒绝识别：该图片可能不是植物，或者不属于本系统支持的 10 种植物。")
                 else:
-                    # 记录数据
                     now_str = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
                     safe_filename = f"{now_str}_{uploaded_file.name}"
                     saved_img_path = os.path.join(UPLOAD_DIR, safe_filename)
@@ -278,7 +314,6 @@ def render_recognition_ui():
 
                     level = plant_levels.get(predicted_class, "保护物种")
                     
-                    # 统一的识别主卡片
                     st.markdown(f"""
                         <div class="custom-card">
                             <h2 style="margin-top:0; color: {title_color}; font-size: 2rem;">🌱 {predicted_class}</h2>
@@ -296,7 +331,6 @@ def render_recognition_ui():
                     
                     query_name = IPLANT_NAME_MAPPING.get(predicted_class, predicted_class)
                     
-                    # 普通用户：展示科普链接，结束
                     if st.session_state['role'] == "user":
                         st.markdown(f"""
                             <a href="https://www.iplant.cn/info/{query_name}" target="_blank" style="text-decoration:none;">
@@ -306,7 +340,6 @@ def render_recognition_ui():
                             </a>
                         """, unsafe_allow_html=True)
                     
-                    # 专家与管理员：顺延展示专业分析数据
                     else:
                         st.markdown("---")
                         st.markdown("### 🔬 专业深度分析")
@@ -347,14 +380,10 @@ def render_recognition_ui():
                             except Exception as e:
                                 st.warning("热力图生成失败")
 
-# ================= 9. 按角色渲染主画面 =================
-if st.session_state['role'] == "admin":
-    st.markdown('<div class="hero-title">👑 管理员控制台</div>', unsafe_allow_html=True)
-    tab1, tab2, tab3, tab4 = st.tabs(["🌿 基础识别系统", "📊 全平台数据", "👥 用户管理", "📢 发布公告"])
-    
-    with tab1:
-        render_recognition_ui()
-    with tab2:
+# ================= 9. 路由渲染主画面 =================
+if st.session_state['role'] == "admin" and st.session_state.get('admin_view') != 'recognize':
+    if st.session_state['admin_view'] == 'data':
+        st.markdown('<div class="hero-title">📊 全平台数据</div>', unsafe_allow_html=True)
         if os.path.exists(HISTORY_FILE):
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f: history_records = json.load(f)
             if len(history_records) > 0:
@@ -362,23 +391,28 @@ if st.session_state['role'] == "admin":
                 if 'username' not in df_hist.columns: df_hist['username'] = '历史测试用户'
                 st.dataframe(df_hist[["username", "timestamp", "predicted_class", "confidence"]].iloc[::-1], use_container_width=True)
             else: st.info("暂无记录。")
-    with tab3:
+            
+    elif st.session_state['admin_view'] == 'users':
+        st.markdown('<div class="hero-title">👥 用户管理</div>', unsafe_allow_html=True)
         users = load_users()
-        df_users = pd.DataFrame([(k, v['role']) for k, v in users.items()], columns=["账号名称", "身份"])
+        df_users = pd.DataFrame([(k, v['role'], len(v.get('read_messages', []))) for k, v in users.items()], columns=["账号名称", "身份", "已读公告数"])
         df_users["身份"] = df_users["身份"].map({"admin": "管理员", "expert": "专家", "user": "普通用户"})
         st.dataframe(df_users, use_container_width=True, hide_index=True)
-    with tab4:
-        new_msg = st.text_area("输入系统公告（全用户可见）")
+        
+    elif st.session_state['admin_view'] == 'notice':
+        st.markdown('<div class="hero-title">📢 发布公告</div>', unsafe_allow_html=True)
+        new_msg = st.text_area("输入系统公告（用户下次登录时会收到弹窗，且仅弹一次）")
         if st.button("🚀 发布公告"):
-            if new_msg.strip(): save_message(new_msg.strip()); st.success("公告已发布！")
+            if new_msg.strip(): save_message(new_msg.strip()); st.success("公告已发布！所有用户下次登录均会收到一次性提示。")
             else: st.warning("公告内容不能为空。")
 
 else:
-    # 专家和普通用户的统一标题
-    title_text = "🔬 植物专家工作台" if st.session_state['role'] == "expert" else "🌿 云南珍稀植物科普识别"
-    sub_text = "深度分析、相似物种对比与热力图解释" if st.session_state['role'] == "expert" else "上传照片，获取植物百科与保护级别"
-    st.markdown(f'<div class="hero-title">{title_text}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="hero-subtitle">{sub_text}</div>', unsafe_allow_html=True)
-    
-    # 核心画面复用
+    if st.session_state['role'] == "admin":
+        st.markdown('<div class="hero-title">🌿 管理员识别测试</div>', unsafe_allow_html=True)
+    elif st.session_state['role'] == "expert":
+        st.markdown('<div class="hero-title">🔬 植物专家工作台</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="hero-title">🌿 云南珍稀植物科普识别</div>', unsafe_allow_html=True)
+        
+    st.markdown('<div class="hero-subtitle">上传照片，获取鉴定结果与分析报告</div>', unsafe_allow_html=True)
     render_recognition_ui()
