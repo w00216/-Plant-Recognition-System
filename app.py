@@ -262,6 +262,29 @@ with st.sidebar:
         show_gradcam = st.toggle("🔥 开启 Grad-CAM 热力图", value=False)
         st.caption("提示：热力图能解释 AI 关注的图像区域。")
 
+    # 🌟 仅在此处增加了植物名录的纯净排版，其余均未改动
+    st.write("---")
+    st.markdown("### 🌿 云南保护植物名录")
+    st.caption("系统当前支持鉴定以下 10 种珍稀植物：")
+    
+    local_plant_levels = {
+        "云南蓝果树": "一级", "五针白皮松": "一级", "华盖木": "一级", "绿春苏铁": "一级",
+        "景东翅子树": "二级", "朱红大杜鹃": "二级", "漾濞槭": "二级", "红河橙、宜昌橙": "二级",
+        "希陶木": "省级", "滇重楼": "省级"
+    }
+    
+    for p_name, p_level in local_plant_levels.items():
+        st.markdown(
+            f"""
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed rgba(150, 150, 150, 0.3);">
+                <span style="font-size: 15px;">🌱 {p_name}</span>
+                <span style="font-size: 14px; font-weight: bold;">{p_level}</span>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+# =========================================================================
+
 # ================= 7. 加载模型 =================
 MODEL_PATH = os.path.join(BASE_DIR, "plant_model.h5")
 IMG_SIZE = (224, 224)
