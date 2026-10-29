@@ -367,6 +367,18 @@ def render_recognition_ui():
                         st.markdown("---")
                         st.markdown("### 🔬 专业深度分析")
                         
+                        # ================= 🌟 新增：当前物种详情链接 =================
+                        st.markdown(f"""
+                            <div style="margin-bottom: 20px;">
+                                <a href="https://www.iplant.cn/info/{query_name}" target="_blank" style="text-decoration:none;">
+                                    <div style="background-color: {card_bg}; color: {title_color}; padding: 14px 20px; border-radius: 8px; border: 1px solid {title_color}; font-weight: 600; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05); transition: all 0.3s;">
+                                        🔗 查看当前鉴定物种「{predicted_class}」官方完整资料 ↗
+                                    </div>
+                                </a>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        # ============================================================
+                        
                         c_top5, c_sim = st.columns([1, 1])
                         with c_top5:
                             st.markdown("##### 📈 模型内部 Top-5 分布")
