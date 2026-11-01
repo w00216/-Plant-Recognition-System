@@ -9,6 +9,7 @@ import streamlit as st
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import exifread # 🌟 新增引入库
 from PIL import Image
 from tensorflow.keras.models import load_model, Model
 from tensorflow.keras.applications.efficientnet import preprocess_input
@@ -30,6 +31,7 @@ except NameError:
 USERS_FILE = os.path.join(BASE_DIR, "users.json")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.json")
 MESSAGES_FILE = os.path.join(BASE_DIR, "messages.json")
+FEEDBACK_FILE = os.path.join(BASE_DIR, "feedback.json") # 🌟 新增反馈文件
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -61,10 +63,8 @@ def load_users():
         return default_users
     with open(USERS_FILE, 'r', encoding='utf-8') as f: 
         users = json.load(f)
-        # 兼容旧数据结构
         for u in users:
-            if "read_messages" not in users[u]:
-                users[u]["read_messages"] = []
+            if "read_messages" not in users[u]: users[u]["read_messages"] = []
         return users
 
 def save_user(username, password, role):
@@ -75,12 +75,10 @@ def save_user(username, password, role):
 def update_user_read_msg(username, msg_time):
     users = load_users()
     if username in users:
-        if "read_messages" not in users[username]:
-            users[username]["read_messages"] = []
+        if "read_messages" not in users[username]: users[username]["read_messages"] = []
         if msg_time not in users[username]["read_messages"]:
             users[username]["read_messages"].append(msg_time)
-            with open(USERS_FILE, 'w', encoding='utf-8') as f: 
-                json.dump(users, f, ensure_ascii=False, indent=4)
+            with open(USERS_FILE, 'w', encoding='utf-8') as f: json.dump(users, f, ensure_ascii=False, indent=4)
 
 def load_messages():
     if os.path.exists(MESSAGES_FILE):
@@ -92,13 +90,14 @@ def save_message(msg):
     messages.append({"time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "content": msg})
     with open(MESSAGES_FILE, 'w', encoding='utf-8') as f: json.dump(messages, f, ensure_ascii=False, indent=4)
 
-def log_history(username, predicted_class, confidence, image_path):
+def log_history(username, predicted_class, confidence, image_path, location): # 🌟 新增定位记录
     record = {
         "username": username,
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "image_path": image_path,
         "predicted_class": predicted_class,
-        "confidence": float(confidence)
+        "confidence": float(confidence),
+        "location": location # 🌟 记录定位
     }
     history_data = []
     if os.path.exists(HISTORY_FILE):
@@ -107,6 +106,49 @@ def log_history(username, predicted_class, confidence, image_path):
             except: pass
     history_data.append(record)
     with open(HISTORY_FILE, 'w', encoding='utf-8') as f: json.dump(history_data, f, ensure_ascii=False, indent=4)
+
+# 🌟 新增：获取 GPS 信息函数
+def extract_gps(image_file):
+    try:
+        image_file.seek(0)
+        tags = exifread.process_file(image_file)
+        if 'GPS GPSLatitude' in tags and 'GPS GPSLongitude' in tags:
+            def _to_deg(value):
+                d = float(value.values[0].num) / float(value.values[0].den)
+                m = float(value.values[1].num) / float(value.values[1].den)
+                s = float(value.values[2].num) / float(value.values[2].den)
+                return d + (m / 60.0) + (s / 3600.0)
+            
+            lat = _to_deg(tags['GPS GPSLatitude'])
+            lon = _to_deg(tags['GPS GPSLongitude'])
+            if tags['GPS GPSLatitudeRef'].values == 'S': lat = -lat
+            if tags['GPS GPSLongitudeRef'].values == 'W': lon = -lon
+            return f"{lat:.6f}, {lon:.6f}"
+    except Exception:
+        pass
+    return "无GPS信息"
+
+# 🌟 新增：保存纠错反馈
+def save_feedback(image_name, predicted, corrected, note):
+    data = []
+    if os.path.exists(FEEDBACK_FILE):
+        with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f:
+            try: data = json.load(f)
+            except: pass
+    data.append({
+        "username": st.session_state['username'],
+        "image_name": image_name,
+        "predicted": predicted,
+        "corrected": corrected,
+        "note": note,
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+    with open(FEEDBACK_FILE, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=4)
+
+def load_feedback():
+    if os.path.exists(FEEDBACK_FILE):
+        with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+    return []
 
 # ================= 4. 登录与注册 =================
 if 'logged_in' not in st.session_state:
@@ -126,15 +168,12 @@ if not st.session_state['logged_in']:
                 if login_user in users and users[login_user]["password"] == hash_password(login_pass):
                     st.session_state.update({'logged_in': True, 'username': login_user, 'role': users[login_user]["role"], 'admin_view': 'recognize'})
                     
-                    # 🌟 检查是否有未读公告
                     msgs = load_messages()
                     if msgs:
                         latest_msg = msgs[-1]
                         read_msgs = users[login_user].get("read_messages", [])
                         if latest_msg["time"] not in read_msgs:
-                            # 记录到 session_state，渲染主页面时弹出
                             st.session_state['new_notice'] = latest_msg["content"]
-                            # 标记为已读
                             update_user_read_msg(login_user, latest_msg["time"])
                     
                     st.rerun()
@@ -216,7 +255,7 @@ theme_css = f"""
     [data-testid="stSidebar"] p, [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, [data-testid="stSidebar"] span {{ color: {text_app} !important; }}
     .hero-title {{ color: {title_color} !important; font-size: 2.8rem; font-weight: 800; margin-bottom: 0px; }}
     .hero-subtitle {{ color: {sub_color} !important; font-size: 1.1rem; margin-bottom: 2rem; }}
-    .custom-card {{ background-color: {card_bg} !important; border: 1px solid {card_border} !important; border-left: 5px solid {title_color} !important; padding: 24px; border-radius: 12px; color: {card_text} !important; }}
+    .custom-card {{ background-color: {card_bg} !important; border: 1px solid {card_border} !important; border-left: 5px solid {title_color} !important; padding: 24px; border-radius: 12px; color: {card_text} !important; margin-bottom: 15px; }}
     .upload-info {{ background-color: {sidebar_bg} !important; border: 1px dashed {title_color} !important; color: {text_app} !important; padding: 20px; border-radius: 12px; text-align: center; }}
     .similar-warn {{ background-color: {warn_bg} !important; border-left: 5px solid {warn_border} !important; padding: 16px 20px !important; border-radius: 8px !important; margin-top: 15px; }}
     .similar-title {{ color: {warn_text} !important; font-weight: bold; font-size: 1.1rem; }}
@@ -227,10 +266,9 @@ theme_css = f"""
 """
 st.markdown(theme_css, unsafe_allow_html=True)
 
-# 触发未读公告提示
 if 'new_notice' in st.session_state:
     st.toast(f"📢 系统最新公告: {st.session_state['new_notice']}", icon="📢")
-    del st.session_state['new_notice'] # 弹过一次就删掉，防止页面刷新重弹
+    del st.session_state['new_notice']
 
 # ================= 6. 侧边栏（导航与功能键统一放置） =================
 with st.sidebar:
@@ -245,11 +283,13 @@ with st.sidebar:
     if st.session_state['role'] == "admin":
         st.write("---")
         st.markdown("### 🛠️ 管理员导航")
-        admin_view = st.radio("选择后台功能", ["🌿 基础识别系统", "📊 全平台数据", "👥 用户管理", "📢 发布公告"])
+        # 🌟 新增：纠错反馈查看页面
+        admin_view = st.radio("选择后台功能", ["🌿 基础识别系统", "📊 全平台数据", "👥 用户管理", "📢 发布公告", "💡 纠错反馈"])
         if admin_view == "🌿 基础识别系统": st.session_state['admin_view'] = 'recognize'
         elif admin_view == "📊 全平台数据": st.session_state['admin_view'] = 'data'
         elif admin_view == "👥 用户管理": st.session_state['admin_view'] = 'users'
         elif admin_view == "📢 发布公告": st.session_state['admin_view'] = 'notice'
+        elif admin_view == "💡 纠错反馈": st.session_state['admin_view'] = 'feedback'
 
     st.write("---")
     if st.toggle("🌙 开启深色模式", value=dark_mode): st.session_state['dark_mode'] = True
@@ -262,7 +302,6 @@ with st.sidebar:
         show_gradcam = st.toggle("🔥 开启 Grad-CAM 热力图", value=False)
         st.caption("提示：热力图能解释 AI 关注的图像区域。")
 
-    # 🌟 仅在此处增加了植物名录的纯净排版，其余均未改动
     st.write("---")
     st.markdown("### 🌿 云南保护植物名录")
     st.caption("系统当前支持鉴定以下 10 种珍稀植物：")
@@ -283,7 +322,6 @@ with st.sidebar:
             """, 
             unsafe_allow_html=True
         )
-# =========================================================================
 
 # ================= 7. 加载模型 =================
 MODEL_PATH = os.path.join(BASE_DIR, "plant_model.h5")
@@ -302,118 +340,157 @@ plant_levels = {"云南蓝果树": "一级", "五针白皮松": "一级", "华�
 # ================= 8. 核心识别 UI =================
 def render_recognition_ui():
     col1, col2 = st.columns([1, 1.2], gap="large")
+    
+    # 🌟 批量上传限制
+    max_files = 5 if st.session_state['role'] == "user" else 50
+    
     with col1:
-        st.markdown("#### 📸 图片采集区")
-        uploaded_file = st.file_uploader("点击或拖拽上传植物照片", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
-        if uploaded_file:
-            image = Image.open(uploaded_file)
-            st.image(image, caption="待识别图像", use_column_width=True)
+        st.markdown(f"#### 📸 图片采集区 (最多 {max_files} 张)")
+        uploaded_files = st.file_uploader("点击或拖拽上传植物照片", type=["jpg", "jpeg", "png"], accept_multiple_files=True, label_visibility="collapsed")
+        
+        if uploaded_files:
+            if len(uploaded_files) > max_files:
+                st.warning(f"当前身份最多只能上传 {max_files} 张图片，已自动截取前 {max_files} 张。")
+                uploaded_files = uploaded_files[:max_files]
+                
+            for i, uf in enumerate(uploaded_files):
+                st.image(uf, caption=f"待识别图像 {i+1}", use_column_width=True)
             btn_predict = st.button("🔍 启动 AI 识别", use_container_width=True)
         else:
-            st.markdown('<div class="upload-info">👆 请上传一张清晰的植物照片</div>', unsafe_allow_html=True)
+            st.markdown('<div class="upload-info">👆 请上传一张或多张清晰的植物照片</div>', unsafe_allow_html=True)
             btn_predict = False
 
     with col2:
         st.markdown("#### 📊 物种鉴定结果")
-        if uploaded_file and btn_predict and model_loaded:
-            with st.spinner("AI 正在提取特征比对中..."):
-                img = image.convert('RGB').resize(IMG_SIZE)
-                img_array = preprocess_input(np.expand_dims(img_to_array(img), axis=0)).astype('float32')
-                predictions = model.predict(img_array, verbose=0)
-                
-                probs = predictions[0]
-                top5_indices = np.argsort(probs)[::-1][:5]
-                top5_results = [(idx_to_class.get(i, "未知"), probs[i] * 100) for i in top5_indices]
-                predicted_class, confidence = top5_results[0]
-                
-                if confidence < 80.0:
-                    st.error("❌ 拒绝识别：该图片可能不是植物，或者不属于本系统支持的 10 种植物。")
-                else:
-                    now_str = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-                    safe_filename = f"{now_str}_{uploaded_file.name}"
-                    saved_img_path = os.path.join(UPLOAD_DIR, safe_filename)
-                    image.convert('RGB').save(saved_img_path)
-                    log_history(st.session_state['username'], predicted_class, confidence, saved_img_path)
-
-                    level = plant_levels.get(predicted_class, "保护物种")
+        if uploaded_files and btn_predict and model_loaded:
+            # 🌟 循环处理多张图片
+            for i, uf in enumerate(uploaded_files):
+                st.markdown(f"--- \n#### 图 {i+1}: {uf.name}")
+                with st.spinner(f"AI 正在分析图 {i+1}..."):
+                    # 提取定位
+                    location_str = extract_gps(uf)
                     
-                    st.markdown(f"""
-                        <div class="custom-card">
-                            <h2 style="margin-top:0; color: {title_color}; font-size: 2rem;">🌱 {predicted_class}</h2>
-                            <div style="margin-top: 15px;">
-                                <span style="font-size: 1.1rem; color: {sub_color};">保护级别：</span>
-                                <span style="color: {warn_border}; font-weight: bold; font-size: 1.1rem; border: 1px solid {warn_border}; padding: 3px 10px; border-radius: 20px; margin-left: 10px;">{level}</span>
-                            </div>
-                            <p style="font-size: 1.1rem; margin-top: 15px; color: {sub_color};">
-                                模型置信度：<b style="color: {text_app};">{confidence:.2f}%</b>
-                            </p>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    st.progress(int(confidence))
-                    st.success("✅ 鉴定结果可靠。")
+                    # 预处理
+                    uf.seek(0)
+                    image = Image.open(uf)
+                    img = image.convert('RGB').resize(IMG_SIZE)
+                    img_array = preprocess_input(np.expand_dims(img_to_array(img), axis=0)).astype('float32')
+                    predictions = model.predict(img_array, verbose=0)
                     
-                    query_name = IPLANT_NAME_MAPPING.get(predicted_class, predicted_class)
+                    probs = predictions[0]
+                    top5_indices = np.argsort(probs)[::-1][:5]
+                    top5_results = [(idx_to_class.get(idx, "未知"), probs[idx] * 100) for idx in top5_indices]
+                    predicted_class, confidence = top5_results[0]
                     
-                    if st.session_state['role'] == "user":
-                        st.markdown(f"""
-                            <a href="https://www.iplant.cn/info/{query_name}" target="_blank" style="text-decoration:none;">
-                                <div style="background-color: {card_bg}; color: {title_color}; padding: 14px 20px; border-radius: 8px; border: 1px solid {title_color}; font-weight: 600; text-align: center; margin-top: 20px;">
-                                    🔗 查看「{predicted_class}」官方完整形态描述与标本记录 ↗
-                                </div>
-                            </a>
-                        """, unsafe_allow_html=True)
-                    
+                    if confidence < 80.0:
+                        st.error(f"❌ 图 {i+1} 拒绝识别：可能不是植物或不在系统支持范围内。")
                     else:
-                        st.markdown("---")
-                        st.markdown("### 🔬 专业深度分析")
+                        # 保存图片
+                        now_str = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                        safe_filename = f"{now_str}_{i}_{uf.name}"
+                        saved_img_path = os.path.join(UPLOAD_DIR, safe_filename)
+                        image.convert('RGB').save(saved_img_path)
+                        # 🌟 写入带定位的历史
+                        log_history(st.session_state['username'], predicted_class, confidence, saved_img_path, location_str)
+
+                        level = plant_levels.get(predicted_class, "保护物种")
                         
-                        # ================= 🌟 新增：当前物种详情链接 =================
+                        # 🌟 在卡片里展示定位
                         st.markdown(f"""
-                            <div style="margin-bottom: 20px;">
+                            <div class="custom-card">
+                                <h2 style="margin-top:0; color: {title_color}; font-size: 2rem;">🌱 {predicted_class}</h2>
+                                <div style="margin-top: 15px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
+                                    <div>
+                                        <span style="font-size: 1.1rem; color: {sub_color};">保护级别：</span>
+                                        <span style="color: {warn_border}; font-weight: bold; font-size: 1.1rem; border: 1px solid {warn_border}; padding: 3px 10px; border-radius: 20px; margin-left: 10px;">{level}</span>
+                                    </div>
+                                    <div>
+                                        <span style="font-size: 1.1rem; color: {sub_color};">📍 拍摄地点：</span>
+                                        <span style="font-weight: bold; font-size: 1.1rem;">{location_str}</span>
+                                    </div>
+                                </div>
+                                <p style="font-size: 1.1rem; margin-top: 15px; color: {sub_color};">
+                                    模型置信度：<b style="color: {text_app};">{confidence:.2f}%</b>
+                                </p>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        st.progress(int(confidence))
+                        st.success(f"✅ 图 {i+1} 鉴定结果可靠。")
+                        
+                        query_name = IPLANT_NAME_MAPPING.get(predicted_class, predicted_class)
+                        
+                        if st.session_state['role'] == "user":
+                            st.markdown(f"""
                                 <a href="https://www.iplant.cn/info/{query_name}" target="_blank" style="text-decoration:none;">
-                                    <div style="background-color: {card_bg}; color: {title_color}; padding: 14px 20px; border-radius: 8px; border: 1px solid {title_color}; font-weight: 600; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05); transition: all 0.3s;">
-                                        🔗 查看当前鉴定物种「{predicted_class}」官方完整资料 ↗
+                                    <div style="background-color: {card_bg}; color: {title_color}; padding: 14px 20px; border-radius: 8px; border: 1px solid {title_color}; font-weight: 600; text-align: center; margin-top: 20px;">
+                                        🔗 查看「{predicted_class}」官方完整形态描述与标本记录 ↗
                                     </div>
                                 </a>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        # ============================================================
+                            """, unsafe_allow_html=True)
                         
-                        c_top5, c_sim = st.columns([1, 1])
-                        with c_top5:
-                            st.markdown("##### 📈 模型内部 Top-5 分布")
-                            df_top5 = pd.DataFrame(top5_results, columns=["候选物种", "预测概率"])
-                            df_top5["预测概率"] = df_top5["预测概率"].apply(lambda x: f"{x:.2f}%")
-                            st.dataframe(df_top5, use_container_width=True, hide_index=True)
+                        else:
+                            st.markdown("### 🔬 专业深度分析")
                             
-                        with c_sim:
-                            st.markdown("##### ⚠️ 外部相似物种预警")
-                            if predicted_class in SIMILAR_PLANTS:
-                                for sim in SIMILAR_PLANTS[predicted_class]:
-                                    sim_url = f"https://www.iplant.cn/info/{sim['name'].split(' ')[0]}"
-                                    st.markdown(f"""
-                                        <div class="similar-warn" style="margin-top:5px;">
-                                            <div class="similar-title">🚨 极高风险混淆：{sim['name']}</div>
-                                            <div class="similar-text" style="font-size:0.85rem; margin-top:8px;">
-                                                <b>鉴别要点：</b>{sim['diff']}<br><br>
-                                                🔗 <a href="{sim_url}" target="_blank" style="color:{warn_text}; font-weight:bold;">查阅相似物种资料</a>
-                                            </div>
+                            st.markdown(f"""
+                                <div style="margin-bottom: 20px;">
+                                    <a href="https://www.iplant.cn/info/{query_name}" target="_blank" style="text-decoration:none;">
+                                        <div style="background-color: {card_bg}; color: {title_color}; padding: 14px 20px; border-radius: 8px; border: 1px solid {title_color}; font-weight: 600; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05); transition: all 0.3s;">
+                                            🔗 查看当前鉴定物种「{predicted_class}」官方完整资料 ↗
                                         </div>
-                                    """, unsafe_allow_html=True)
-                            else:
-                                st.info("该物种暂无记录在案的极高风险混淆种。")
+                                    </a>
+                                </div>
+                            """, unsafe_allow_html=True)
+                            
+                            c_top5, c_sim = st.columns([1, 1])
+                            with c_top5:
+                                st.markdown("##### 📈 模型内部 Top-5 分布")
+                                df_top5 = pd.DataFrame(top5_results, columns=["候选物种", "预测概率"])
+                                df_top5["预测概率"] = df_top5["预测概率"].apply(lambda x: f"{x:.2f}%")
+                                st.dataframe(df_top5, use_container_width=True, hide_index=True)
+                                
+                            with c_sim:
+                                st.markdown("##### ⚠️ 外部相似物种预警")
+                                if predicted_class in SIMILAR_PLANTS:
+                                    for sim in SIMILAR_PLANTS[predicted_class]:
+                                        sim_url = f"https://www.iplant.cn/info/{sim['name'].split(' ')[0]}"
+                                        st.markdown(f"""
+                                            <div class="similar-warn" style="margin-top:5px;">
+                                                <div class="similar-title">🚨 极高风险混淆：{sim['name']}</div>
+                                                <div class="similar-text" style="font-size:0.85rem; margin-top:8px;">
+                                                    <b>鉴别要点：</b>{sim['diff']}<br><br>
+                                                    🔗 <a href="{sim_url}" target="_blank" style="color:{warn_text}; font-weight:bold;">查阅相似物种资料</a>
+                                                </div>
+                                            </div>
+                                        """, unsafe_allow_html=True)
+                                else:
+                                    st.info("该物种暂无记录在案的极高风险混淆种。")
 
-                        if show_gradcam:
+                            if show_gradcam:
+                                st.markdown("##### 🔥 AI 特征注意力热力图")
+                                try:
+                                    heatmap = make_gradcam_heatmap(img_array, model, pred_index=top5_indices[0])
+                                    superimposed_img = display_gradcam(saved_img_path, heatmap)
+                                    gc1, gc2 = st.columns(2)
+                                    gc1.image(image.resize(IMG_SIZE), caption="原图", use_column_width=True)
+                                    gc2.image(superimposed_img, caption="AI 关注区域", use_column_width=True)
+                                except Exception as e:
+                                    st.warning("热力图生成失败")
+
+                            # 🌟 新增：纠错反馈表单 (仅专家和管理员可见)
                             st.markdown("---")
-                            st.markdown("##### 🔥 AI 特征注意力热力图")
-                            try:
-                                heatmap = make_gradcam_heatmap(img_array, model, pred_index=top5_indices[0])
-                                superimposed_img = display_gradcam(saved_img_path, heatmap)
-                                gc1, gc2 = st.columns(2)
-                                gc1.image(image.resize(IMG_SIZE), caption="原图", use_column_width=True)
-                                gc2.image(superimposed_img, caption="AI 关注区域", use_column_width=True)
-                            except Exception as e:
-                                st.warning("热力图生成失败")
+                            st.markdown("##### 💡 AI 认错了？请帮助我们纠正")
+                            with st.form(key=f"feedback_form_{i}"):
+                                correct_label = st.selectbox("请选择正确的植物品种：", list(plant_levels.keys()), key=f"label_{i}")
+                                feedback_note = st.text_area("鉴别备注 / 错误原因说明（选填）：", key=f"note_{i}")
+                                submitted = st.form_submit_button("提交纠错反馈")
+                                if submitted:
+                                    save_feedback(uf.name, predicted_class, correct_label, feedback_note)
+                                    st.success("感谢反馈！数据已记录至后台数据库。")
+                                    
+        elif uploaded_files is None:
+            pass # 占位
+        else:
+            pass
 
 # ================= 9. 路由渲染主画面 =================
 if st.session_state['role'] == "admin" and st.session_state.get('admin_view') != 'recognize':
@@ -424,7 +501,8 @@ if st.session_state['role'] == "admin" and st.session_state.get('admin_view') !=
             if len(history_records) > 0:
                 df_hist = pd.DataFrame(history_records)
                 if 'username' not in df_hist.columns: df_hist['username'] = '历史测试用户'
-                st.dataframe(df_hist[["username", "timestamp", "predicted_class", "confidence"]].iloc[::-1], use_container_width=True)
+                if 'location' not in df_hist.columns: df_hist['location'] = '无GPS信息' # 兼容旧数据
+                st.dataframe(df_hist[["username", "timestamp", "predicted_class", "confidence", "location"]].iloc[::-1], use_container_width=True)
             else: st.info("暂无记录。")
             
     elif st.session_state['admin_view'] == 'users':
@@ -440,6 +518,16 @@ if st.session_state['role'] == "admin" and st.session_state.get('admin_view') !=
         if st.button("🚀 发布公告"):
             if new_msg.strip(): save_message(new_msg.strip()); st.success("公告已发布！所有用户下次登录均会收到一次性提示。")
             else: st.warning("公告内容不能为空。")
+            
+    # 🌟 新增：管理员后台查看纠错反馈
+    elif st.session_state['admin_view'] == 'feedback':
+        st.markdown('<div class="hero-title">💡 专家纠错反馈记录</div>', unsafe_allow_html=True)
+        fb_data = load_feedback()
+        if fb_data:
+            df_fb = pd.DataFrame(fb_data)
+            st.dataframe(df_fb.iloc[::-1], use_container_width=True, hide_index=True)
+        else:
+            st.info("目前还没有收到专家的纠错反馈。")
 
 else:
     if st.session_state['role'] == "admin":
