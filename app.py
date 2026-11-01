@@ -9,8 +9,8 @@ import streamlit as st
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-import exifread # 🌟 新增引入库
-from PIL import Image
+import random # 🌟 新增用于验证码
+from PIL import Image, ExifTags # 🌟 用PIL替代exifread，无需改云端requirements
 from tensorflow.keras.models import load_model, Model
 from tensorflow.keras.applications.efficientnet import preprocess_input
 from tensorflow.keras.preprocessing.image import img_to_array
@@ -31,7 +31,7 @@ except NameError:
 USERS_FILE = os.path.join(BASE_DIR, "users.json")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.json")
 MESSAGES_FILE = os.path.join(BASE_DIR, "messages.json")
-FEEDBACK_FILE = os.path.join(BASE_DIR, "feedback.json") # 🌟 新增反馈文件
+FEEDBACK_FILE = os.path.join(BASE_DIR, "feedback.json")
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -59,18 +59,26 @@ def hash_password(password): return hashlib.sha256(password.encode()).hexdigest(
 def load_users():
     if not os.path.exists(USERS_FILE):
         default_users = {ADMIN_USER: {"password": hash_password(ADMIN_PASS), "role": "admin", "read_messages": []}}
-        with open(USERS_FILE, 'w', encoding='utf-8') as f: json.dump(default_users, f, ensure_ascii=False, indent=4)
+        try:
+            with open(USERS_FILE, 'w', encoding='utf-8') as f: json.dump(default_users, f, ensure_ascii=False, indent=4)
+        except: pass
         return default_users
-    with open(USERS_FILE, 'r', encoding='utf-8') as f: 
-        users = json.load(f)
-        for u in users:
-            if "read_messages" not in users[u]: users[u]["read_messages"] = []
-        return users
+    try:
+        with open(USERS_FILE, 'r', encoding='utf-8') as f: 
+            users = json.load(f)
+            for u in users:
+                if "read_messages" not in users[u]: users[u]["read_messages"] = []
+            return users
+    except:
+        # 如果云端文件损坏或丢失，自动恢复默认配置
+        return {ADMIN_USER: {"password": hash_password(ADMIN_PASS), "role": "admin", "read_messages": []}}
 
 def save_user(username, password, role):
     users = load_users()
     users[username] = {"password": hash_password(password), "role": role, "read_messages": []}
-    with open(USERS_FILE, 'w', encoding='utf-8') as f: json.dump(users, f, ensure_ascii=False, indent=4)
+    try:
+        with open(USERS_FILE, 'w', encoding='utf-8') as f: json.dump(users, f, ensure_ascii=False, indent=4)
+    except: pass
 
 def update_user_read_msg(username, msg_time):
     users = load_users()
@@ -78,63 +86,70 @@ def update_user_read_msg(username, msg_time):
         if "read_messages" not in users[username]: users[username]["read_messages"] = []
         if msg_time not in users[username]["read_messages"]:
             users[username]["read_messages"].append(msg_time)
-            with open(USERS_FILE, 'w', encoding='utf-8') as f: json.dump(users, f, ensure_ascii=False, indent=4)
+            try:
+                with open(USERS_FILE, 'w', encoding='utf-8') as f: json.dump(users, f, ensure_ascii=False, indent=4)
+            except: pass
 
 def load_messages():
     if os.path.exists(MESSAGES_FILE):
-        with open(MESSAGES_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        try:
+            with open(MESSAGES_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        except: return []
     return []
 
 def save_message(msg):
     messages = load_messages()
     messages.append({"time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "content": msg})
-    with open(MESSAGES_FILE, 'w', encoding='utf-8') as f: json.dump(messages, f, ensure_ascii=False, indent=4)
+    try:
+        with open(MESSAGES_FILE, 'w', encoding='utf-8') as f: json.dump(messages, f, ensure_ascii=False, indent=4)
+    except: pass
 
-def log_history(username, predicted_class, confidence, image_path, location): # 🌟 新增定位记录
+def log_history(username, predicted_class, confidence, image_path, location):
     record = {
         "username": username,
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "image_path": image_path,
         "predicted_class": predicted_class,
         "confidence": float(confidence),
-        "location": location # 🌟 记录定位
+        "location": location
     }
     history_data = []
     if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-            try: history_data = json.load(f)
-            except: pass
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f: history_data = json.load(f)
+        except: pass
     history_data.append(record)
-    with open(HISTORY_FILE, 'w', encoding='utf-8') as f: json.dump(history_data, f, ensure_ascii=False, indent=4)
+    try:
+        with open(HISTORY_FILE, 'w', encoding='utf-8') as f: json.dump(history_data, f, ensure_ascii=False, indent=4)
+    except: pass
 
-# 🌟 新增：获取 GPS 信息函数
+# 🌟 修改：使用纯 PIL 提取 GPS，不再依赖 exifread
 def extract_gps(image_file):
     try:
         image_file.seek(0)
-        tags = exifread.process_file(image_file)
-        if 'GPS GPSLatitude' in tags and 'GPS GPSLongitude' in tags:
-            def _to_deg(value):
-                d = float(value.values[0].num) / float(value.values[0].den)
-                m = float(value.values[1].num) / float(value.values[1].den)
-                s = float(value.values[2].num) / float(value.values[2].den)
-                return d + (m / 60.0) + (s / 3600.0)
-            
-            lat = _to_deg(tags['GPS GPSLatitude'])
-            lon = _to_deg(tags['GPS GPSLongitude'])
-            if tags['GPS GPSLatitudeRef'].values == 'S': lat = -lat
-            if tags['GPS GPSLongitudeRef'].values == 'W': lon = -lon
-            return f"{lat:.6f}, {lon:.6f}"
+        img = Image.open(image_file)
+        exif = img.getexif()
+        if exif:
+            gps_info = exif.get(34853) # 34853 是 GPSInfo 的 Tag ID
+            if gps_info:
+                def _to_deg(value):
+                    d, m, s = [float(v) for v in value]
+                    return d + (m / 60.0) + (s / 3600.0)
+                lat = _to_deg(gps_info[2])
+                lon = _to_deg(gps_info[4])
+                if gps_info[1] == 'S': lat = -lat
+                if gps_info[3] == 'W': lon = -lon
+                return f"{lat:.6f}, {lon:.6f}"
     except Exception:
         pass
     return "无GPS信息"
 
-# 🌟 新增：保存纠错反馈
 def save_feedback(image_name, predicted, corrected, note):
     data = []
     if os.path.exists(FEEDBACK_FILE):
-        with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f:
-            try: data = json.load(f)
-            except: pass
+        try:
+            with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
+        except: pass
     data.append({
         "username": st.session_state['username'],
         "image_name": image_name,
@@ -143,11 +158,15 @@ def save_feedback(image_name, predicted, corrected, note):
         "note": note,
         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
-    with open(FEEDBACK_FILE, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=4)
+    try:
+        with open(FEEDBACK_FILE, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=4)
+    except: pass
 
 def load_feedback():
     if os.path.exists(FEEDBACK_FILE):
-        with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        try:
+            with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        except: return []
     return []
 
 # ================= 4. 登录与注册 =================
@@ -161,7 +180,8 @@ if not st.session_state['logged_in']:
     with col2:
         auth_tab1, auth_tab2 = st.tabs(["🔑 登录", "📝 注册"])
         with auth_tab1:
-            login_user = st.text_input("账号", key="login_user")
+            # 🌟 增加 .strip() 去除意外空格
+            login_user = st.text_input("账号", key="login_user").strip()
             login_pass = st.text_input("密码", type="password", key="login_pass")
             if st.button("登录", use_container_width=True):
                 users = load_users()
@@ -177,21 +197,55 @@ if not st.session_state['logged_in']:
                             update_user_read_msg(login_user, latest_msg["time"])
                     
                     st.rerun()
-                else: st.error("账号或密码错误！")
+                else: 
+                    # 🌟 改进报错提示，说明云端环境特性
+                    st.error("账号或密码错误！\n\n*注：由于系统运行在免费云端环境，休眠重启可能导致临时注册的普通账号数据重置。若您曾注册过，请直接重新注册即可。*")
         with auth_tab2:
-            reg_user = st.text_input("设置账号", key="reg_user")
+            reg_user = st.text_input("设置账号", key="reg_user").strip()
             reg_pass = st.text_input("设置密码", type="password", key="reg_pass")
             reg_role = st.selectbox("选择身份", ["普通用户", "专家"])
-            expert_code_input = st.text_input("专家邀请码（测试码：EXPERT2024）", type="password") if reg_role == "专家" else ""
+            
+            expert_code_input = ""
+            email_code_input = ""
+            
+            # 🌟 专家邮箱验证码模块
+            if reg_role == "专家":
+                st.info("💡 专家注册需进行邮箱验证")
+                reg_email = st.text_input("请输入邮箱", key="reg_email").strip()
+                
+                col_code1, col_code2 = st.columns([1, 1])
+                with col_code1:
+                    email_code_input = st.text_input("请输入验证码", type="password", key="email_code_input")
+                with col_code2:
+                    if st.button("获取验证码", key="btn_send_code", use_container_width=True):
+                        if reg_email and "@" in reg_email:
+                            code = str(random.randint(100000, 999999))
+                            st.session_state['sys_email_code'] = code
+                            st.session_state['sys_email_target'] = reg_email
+                            st.success(f"模拟邮件已发送至 {reg_email}，验证码：{code}")
+                        else:
+                            st.error("请输入格式正确的邮箱")
+                            
+                expert_code_input = st.text_input("专家邀请码（测试码：EXPERT2024）", type="password")
+            
             if st.button("注册", use_container_width=True):
                 users = load_users()
-                if reg_user in users or reg_user == ADMIN_USER: st.error("该账号已存在或不可用！")
-                elif not reg_user or not reg_pass: st.error("账号和密码不能为空！")
+                if reg_user in users or reg_user == ADMIN_USER: 
+                    st.error("该账号已存在或不可用！")
+                elif not reg_user or not reg_pass: 
+                    st.error("账号和密码不能为空！")
+                elif reg_role == "专家":
+                    # 🌟 验证专家信息
+                    if expert_code_input != EXPERT_CODE:
+                        st.error("专家邀请码错误！")
+                    elif email_code_input != st.session_state.get('sys_email_code') or reg_email != st.session_state.get('sys_email_target'):
+                        st.error("邮箱验证码错误或未获取！")
+                    else:
+                        save_user(reg_user, reg_pass, "expert")
+                        st.success("专家账号注册成功，请登录！")
                 else:
-                    final_role = "expert" if (reg_role == "专家" and expert_code_input == EXPERT_CODE) else "user"
-                    if reg_role == "专家" and expert_code_input != EXPERT_CODE: st.error("专家邀请码错误，已自动注册为普通用户。")
-                    save_user(reg_user, reg_pass, final_role)
-                    st.success("注册成功，请登录！")
+                    save_user(reg_user, reg_pass, "user")
+                    st.success("普通用户注册成功，请登录！")
     st.stop()
 
 # ================= 5. 算法与配置 =================
@@ -283,7 +337,6 @@ with st.sidebar:
     if st.session_state['role'] == "admin":
         st.write("---")
         st.markdown("### 🛠️ 管理员导航")
-        # 🌟 新增：纠错反馈查看页面
         admin_view = st.radio("选择后台功能", ["🌿 基础识别系统", "📊 全平台数据", "👥 用户管理", "📢 发布公告", "💡 纠错反馈"])
         if admin_view == "🌿 基础识别系统": st.session_state['admin_view'] = 'recognize'
         elif admin_view == "📊 全平台数据": st.session_state['admin_view'] = 'data'
@@ -341,7 +394,6 @@ plant_levels = {"云南蓝果树": "一级", "五针白皮松": "一级", "华�
 def render_recognition_ui():
     col1, col2 = st.columns([1, 1.2], gap="large")
     
-    # 🌟 批量上传限制
     max_files = 5 if st.session_state['role'] == "user" else 50
     
     with col1:
@@ -363,14 +415,11 @@ def render_recognition_ui():
     with col2:
         st.markdown("#### 📊 物种鉴定结果")
         if uploaded_files and btn_predict and model_loaded:
-            # 🌟 循环处理多张图片
             for i, uf in enumerate(uploaded_files):
                 st.markdown(f"--- \n#### 图 {i+1}: {uf.name}")
                 with st.spinner(f"AI 正在分析图 {i+1}..."):
-                    # 提取定位
                     location_str = extract_gps(uf)
                     
-                    # 预处理
                     uf.seek(0)
                     image = Image.open(uf)
                     img = image.convert('RGB').resize(IMG_SIZE)
@@ -385,17 +434,14 @@ def render_recognition_ui():
                     if confidence < 80.0:
                         st.error(f"❌ 图 {i+1} 拒绝识别：可能不是植物或不在系统支持范围内。")
                     else:
-                        # 保存图片
                         now_str = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
                         safe_filename = f"{now_str}_{i}_{uf.name}"
                         saved_img_path = os.path.join(UPLOAD_DIR, safe_filename)
                         image.convert('RGB').save(saved_img_path)
-                        # 🌟 写入带定位的历史
                         log_history(st.session_state['username'], predicted_class, confidence, saved_img_path, location_str)
 
                         level = plant_levels.get(predicted_class, "保护物种")
                         
-                        # 🌟 在卡片里展示定位
                         st.markdown(f"""
                             <div class="custom-card">
                                 <h2 style="margin-top:0; color: {title_color}; font-size: 2rem;">🌱 {predicted_class}</h2>
@@ -476,7 +522,6 @@ def render_recognition_ui():
                                 except Exception as e:
                                     st.warning("热力图生成失败")
 
-                            # 🌟 新增：纠错反馈表单 (仅专家和管理员可见)
                             st.markdown("---")
                             st.markdown("##### 💡 AI 认错了？请帮助我们纠正")
                             with st.form(key=f"feedback_form_{i}"):
@@ -488,7 +533,7 @@ def render_recognition_ui():
                                     st.success("感谢反馈！数据已记录至后台数据库。")
                                     
         elif uploaded_files is None:
-            pass # 占位
+            pass
         else:
             pass
 
@@ -501,7 +546,7 @@ if st.session_state['role'] == "admin" and st.session_state.get('admin_view') !=
             if len(history_records) > 0:
                 df_hist = pd.DataFrame(history_records)
                 if 'username' not in df_hist.columns: df_hist['username'] = '历史测试用户'
-                if 'location' not in df_hist.columns: df_hist['location'] = '无GPS信息' # 兼容旧数据
+                if 'location' not in df_hist.columns: df_hist['location'] = '无GPS信息'
                 st.dataframe(df_hist[["username", "timestamp", "predicted_class", "confidence", "location"]].iloc[::-1], use_container_width=True)
             else: st.info("暂无记录。")
             
@@ -519,7 +564,6 @@ if st.session_state['role'] == "admin" and st.session_state.get('admin_view') !=
             if new_msg.strip(): save_message(new_msg.strip()); st.success("公告已发布！所有用户下次登录均会收到一次性提示。")
             else: st.warning("公告内容不能为空。")
             
-    # 🌟 新增：管理员后台查看纠错反馈
     elif st.session_state['admin_view'] == 'feedback':
         st.markdown('<div class="hero-title">💡 专家纠错反馈记录</div>', unsafe_allow_html=True)
         fb_data = load_feedback()
